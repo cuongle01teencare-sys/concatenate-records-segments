@@ -12,6 +12,36 @@ from src.processing import (
 )
 
 
+def safe_write_log(
+    *,
+    environment: str,
+    bucket,
+    path: str,
+    data: str,
+) -> bool:
+    try:
+        write_log(
+            environment=environment,
+            bucket=bucket,
+            path=path,
+            data=data,
+        )
+    except Exception as error:
+        print(
+            "Failed to write log. "
+            f"path={path}"
+        )
+        print(
+            traceback.format_exception_only(
+                type(error),
+                error,
+            )[-1].strip()
+        )
+        return False
+
+    return True
+
+
 def write_invalid_webm_backlog(
     *,
     environment: str,
@@ -22,7 +52,7 @@ def write_invalid_webm_backlog(
     if not entries:
         return
 
-    write_log(
+    safe_write_log(
         environment=environment,
         bucket=bucket,
         path=path,
@@ -165,6 +195,8 @@ def main(
             f"{traceback.format_exc()}\n"
         )
 
+        print(error)
+
         error_log_name = (
             f"logs/"
             f"{error_date_str}/"
@@ -172,7 +204,7 @@ def main(
             f"-records-concatenation-error.log"
         )
 
-        write_log(
+        safe_write_log(
             environment=environment,
             bucket=bucket,
             path=error_log_name,
@@ -214,7 +246,7 @@ def main(
     )
 
     if len(should_process_but_no) > 0:
-        write_log(
+        safe_write_log(
             environment=environment,
             bucket=bucket,
             path=(
@@ -225,7 +257,7 @@ def main(
         )
 
     if len(should_not_process_but_yes) > 0:
-        write_log(
+        safe_write_log(
             environment=environment,
             bucket=bucket,
             path=(

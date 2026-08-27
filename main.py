@@ -8,6 +8,7 @@ from src.utils.logging_utils import write_log
 from src.processing import (
     profile_data,
     iter_session_groups,
+    session_has_non_empty_concatenated_webm,
     concatenate_session_video,
 )
 
@@ -107,6 +108,7 @@ def main(
     invalid_webm_backlog_entries: list[str] = []
 
     processed_items = 0
+    skipped_existing_sessions = 0
     skipped_invalid_items = 0
     failed_session_outputs = 0
 
@@ -127,6 +129,13 @@ def main(
 
         for session_path, blobs in groups:
             label = session_path.split("/")[-1]
+
+            if session_has_non_empty_concatenated_webm(
+                bucket=bucket,
+                session_path=session_path,
+            ):
+                skipped_existing_sessions += 1
+                continue
 
             print()
             print(
@@ -270,6 +279,10 @@ def main(
     print(
         "Sessions processed: "
         f"{processed_items}"
+    )
+    print(
+        "Sessions skipped because concatenated WebM already exists: "
+        f"{skipped_existing_sessions}"
     )
     print(
         "Sessions skipped because of invalid WebM chunks: "

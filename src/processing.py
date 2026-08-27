@@ -24,6 +24,50 @@ def get_blob_name(blob: Blob) -> str:
     return blob.name or ""
 
 
+def session_has_non_empty_concatenated_webm(
+    *,
+    bucket: Bucket,
+    session_path: str,
+) -> bool:
+    segment_b = session_path.rstrip("/").split("/")[-1]
+    prefix = (
+        f"{session_path.rstrip('/')}/"
+        "concatenated/"
+    )
+    empty_webm_blobs: list[str] = []
+
+    for blob in bucket.list_blobs(prefix=prefix):
+        blob_name = get_blob_name(blob)
+
+        if not blob_name.lower().endswith(".webm"):
+            continue
+
+        size = blob.size
+
+        if size is None:
+            blob.reload()
+            size = blob.size
+
+        if (size or 0) > 0:
+            print(
+                f"[{segment_b}] "
+                "Skipped because session already has concatenated WebM: "
+                f"gs://{bucket.name}/{blob_name} ({size} bytes)"
+            )
+            return True
+
+        empty_webm_blobs.append(blob_name)
+
+    if empty_webm_blobs:
+        print(
+            f"[{segment_b}] "
+            "Found existing concatenated WebM file(s), "
+            "but they are empty; continuing processing."
+        )
+
+    return False
+
+
 def profile_data(bucket: Bucket) -> None:
     blobs = bucket.list_blobs(
         prefix="captures/",
@@ -1030,6 +1074,8 @@ def concatenate_webm_files_with_demuxer(
         command,
         capture_output=True,
         text=True,
+        encoding="utf-8",
+        errors="replace",
     )
 
     if result.returncode == 0 and output_file.exists():
@@ -1070,6 +1116,8 @@ def concatenate_webm_files_by_bytes_and_remux(
         remux_command,
         capture_output=True,
         text=True,
+        encoding="utf-8",
+        errors="replace",
     )
 
     if remux_result.returncode == 0 and output_file.exists():

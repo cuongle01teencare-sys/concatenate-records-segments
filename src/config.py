@@ -3,7 +3,7 @@ import os
 from dotenv import load_dotenv
 
 
-load_dotenv(override=False)
+load_dotenv(override=False, dotenv_path=".env")
 
 
 VALID_ENVIRONMENTS = {
@@ -74,6 +74,16 @@ KEEP_TEMP_ON_FAILURE = get_bool_env(
     True,
 )
 
+SUPABASE_API_URL = os.getenv("SUPABASE_API_URL", "")
+
+SUPABASE_API_KEY = os.getenv("SUPABASE_API_KEY", "")
+
+# Blob glob used by the `--sync` command to locate session-level concatenated
+# WebM outputs whose record link should be synced into Supabase.
+SUPABASE_SYNC_MATCH_GLOB = os.getenv(
+    "SUPABASE_SYNC_MATCH_GLOB",
+    "captures/*/*/concatenated/*.webm",
+)
 
 if ENVIRONMENT not in VALID_ENVIRONMENTS:
     raise ValueError(

@@ -19,5 +19,11 @@ RUN uv sync --frozen --no-dev --no-install-project
 
 COPY main.py ./main.py
 COPY src ./src
+COPY docker-entrypoint.sh ./docker-entrypoint.sh
+RUN chmod +x ./docker-entrypoint.sh
 
-CMD ["python", "main.py"]
+# RUN_MODE selects the subcommand at container start: "concat" or "sync".
+# Left unset on purpose so a misconfigured deploy fails loudly instead of
+# silently picking a default. Set it per Cloud Run job:
+#   job A -> RUN_MODE=concat   job B -> RUN_MODE=sync
+ENTRYPOINT ["/app/docker-entrypoint.sh"]

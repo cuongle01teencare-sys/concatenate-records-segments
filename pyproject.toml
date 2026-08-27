@@ -7,4 +7,5 @@ requires-python = ">=3.14"
 dependencies = [
     "google-cloud-storage>=3.13.1",
     "python-dotenv>=1.2.1",
+    "supabase>=2.31.0",
 ]

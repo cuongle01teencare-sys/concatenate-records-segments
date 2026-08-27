@@ -12,6 +12,27 @@ from src.processing import (
     concatenate_session_video,
 )
 
+# CLI:
+#   uv run python main.py --concat   -> traverse MATCH_GLOB blobs and concatenate
+#   uv run python main.py --sync     -> traverse SUPABASE_SYNC_MATCH_GLOB blobs and
+#                                        sync record_link into Supabase
+
+# Sync feature logic:
+# Với mỗi session đã có concatenated session-level .webm video.
+# Nếu có nhiều hơn hai .webm được tạo ra từ source (thường là b_from_c và direct b)
+# thì ưu tiên chọn streaming link của video có dung lượng lớn hơn.
+# Sau khi chọn final streaming link, lấy segment_a (google meet code) để ghép thành
+# một google meet url hợp lệ.
+# Tìm trong hai bảng kns_class_sessions và sessions record nào có meeting_url bằng
+# google meet url đó VÀ:
+#   1. kns_class_sessions: session_date bằng session_date_from_segment_b
+#   2. sessions: scheduled_start (theo ngày) bằng session_date_from_segment_b
+# session_date_from_segment_b trích từ segment_b dạng
+# "session-<start_date>T<start_time>Z<suffix>".
+# Nếu đúng 1 record khớp và record_link đang trống -> ghi record_link.
+# Nếu record_link đã có -> backlog (thư mục record_link_already_set).
+# Nếu >= 2 record khớp -> backlog (thư mục multiple_matches).
+
 
 def safe_write_log(
     *,
@@ -295,6 +316,75 @@ def main(
     print("==============================")
 
 
+def run_sync(
+    *,
+    project_id: str,
+    bucket_name: str,
+    environment: str,
+    supabase_api_url: str,
+    supabase_api_key: str,
+    supabase_sync_match_glob: str,
+) -> None:
+    print("Running Supabase record sync")
+
+    if not (supabase_api_url and supabase_api_key):
+        print(
+            "Skipped Supabase record sync because Supabase config is missing "
+            "(SUPABASE_API_URL / SUPABASE_API_KEY)."
+        )
+        return
+
+    from supabase import create_client
+    from src.supabase import supabase_record_sync
+
+    client = storage.Client(
+        project=project_id,
+    )
+
+    bucket = client.bucket(
+        bucket_name,
+    )
+
+    supabase_client = create_client(
+        supabase_api_url,
+        supabase_api_key,
+    )
+
+    supabase_record_sync(
+        bucket,
+        supabase_client,
+        supabase_sync_match_glob,
+        environment,
+    )
+
+
+def build_arg_parser():
+    import argparse
+
+    parser = argparse.ArgumentParser(
+        prog="concatenate-records-segments",
+        description=(
+            "Concatenate session recordings (--concat) or sync record links "
+            "into Supabase (--sync)."
+        ),
+    )
+    group = parser.add_mutually_exclusive_group(required=True)
+    group.add_argument(
+        "--concat",
+        action="store_true",
+        help="Traverse blobs by MATCH_GLOB and concatenate session videos.",
+    )
+    group.add_argument(
+        "--sync",
+        action="store_true",
+        help=(
+            "Traverse blobs by SUPABASE_SYNC_MATCH_GLOB and sync record_link "
+            "into Supabase."
+        ),
+    )
+    return parser
+
+
 if __name__ == "__main__":
     from src.config import (
         PROJECT_ID,
@@ -305,17 +395,33 @@ if __name__ == "__main__":
         KEEP_ALL_WEBM_CHUNKS,
         KEEP_ALL_CONCATENATED_WEBM_FILES,
         KEEP_TEMP_ON_FAILURE,
+        SUPABASE_API_URL,
+        SUPABASE_API_KEY,
+        SUPABASE_SYNC_MATCH_GLOB,
     )
 
-    main(
-        project_id=PROJECT_ID,
-        bucket_name=BUCKET_NAME,
-        environment=ENVIRONMENT,
-        data_profiling=DATA_PROFILING,
-        match_glob=MATCH_GLOB,
-        keep_all_webm_chunks=KEEP_ALL_WEBM_CHUNKS,
-        keep_all_concatenated_webm_files=(
-            KEEP_ALL_CONCATENATED_WEBM_FILES
-        ),
-        keep_temp_on_failure=KEEP_TEMP_ON_FAILURE,
-    )
+    args = build_arg_parser().parse_args()
+
+    if args.sync:
+        run_sync(
+            project_id=PROJECT_ID,
+            bucket_name=BUCKET_NAME,
+            environment=ENVIRONMENT,
+            supabase_api_url=SUPABASE_API_URL,
+            supabase_api_key=SUPABASE_API_KEY,
+            supabase_sync_match_glob=SUPABASE_SYNC_MATCH_GLOB,
+        )
+    else:
+        print("Running concatenation")
+        main(
+            project_id=PROJECT_ID,
+            bucket_name=BUCKET_NAME,
+            environment=ENVIRONMENT,
+            data_profiling=DATA_PROFILING,
+            match_glob=MATCH_GLOB,
+            keep_all_webm_chunks=KEEP_ALL_WEBM_CHUNKS,
+            keep_all_concatenated_webm_files=(
+                KEEP_ALL_CONCATENATED_WEBM_FILES
+            ),
+            keep_temp_on_failure=KEEP_TEMP_ON_FAILURE,
+        )

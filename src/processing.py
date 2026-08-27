@@ -446,9 +446,10 @@ def concatenate_session_video(
 
     Luôn ghép từng participant/segment_c trước.
 
-    Nếu có bất kỳ participant nào fail, tạo thêm 2 video cấp session:
+    Luôn tạo thêm 2 video cấp session (session-level) sau khi ghép segment_c,
+    bất kể participant có fail hay không:
     - <segment_b>_from_c.webm từ các video segment_c đã ghép thành công.
-    - <segment_b>.webm từ toàn bộ chunks đã download trong session.
+    - <segment_b>.webm (direct) từ toàn bộ chunks đã download trong session.
     """
 
     if not blobs:
@@ -554,27 +555,26 @@ def concatenate_session_video(
 
             downloaded_chunk_files.extend(downloaded_files)
 
-        if failed_participants > 0:
-            session_outputs = create_session_outputs_after_participant_failure(
-                bucket=bucket,
-                session_path=session_path,
-                segment_b=segment_b,
-                temp_path=temp_path,
-                participant_outputs=participant_outputs,
-                downloaded_chunk_files=downloaded_chunk_files,
-                environment=environment,
-                keep_all_concatenated_webm_files=(
-                    keep_all_concatenated_webm_files
-                ),
-                invalid_webm_backlog=invalid_webm_backlog,
-                keep_temp_on_failure=keep_temp_on_failure,
-            )
+        session_outputs = create_session_level_outputs(
+            bucket=bucket,
+            session_path=session_path,
+            segment_b=segment_b,
+            temp_path=temp_path,
+            participant_outputs=participant_outputs,
+            downloaded_chunk_files=downloaded_chunk_files,
+            environment=environment,
+            keep_all_concatenated_webm_files=(
+                keep_all_concatenated_webm_files
+            ),
+            invalid_webm_backlog=invalid_webm_backlog,
+            keep_temp_on_failure=keep_temp_on_failure,
+        )
 
-            output_paths.extend(session_outputs.output_paths)
-            failed_session_outputs = session_outputs.failed_session_outputs
+        output_paths.extend(session_outputs.output_paths)
+        failed_session_outputs = session_outputs.failed_session_outputs
 
-            if failed_session_outputs > 0:
-                keep_temp = keep_temp_on_failure
+        if failed_session_outputs > 0:
+            keep_temp = keep_temp_on_failure
 
         if not keep_all_concatenated_webm_files:
             for participant_output in participant_outputs:
@@ -699,7 +699,7 @@ def concatenate_participant_from_files(
     )
 
 
-def create_session_outputs_after_participant_failure(
+def create_session_level_outputs(
     *,
     bucket: Bucket,
     session_path: str,

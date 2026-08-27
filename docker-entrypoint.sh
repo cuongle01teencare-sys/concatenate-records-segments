@@ -13,15 +13,15 @@ set -eu
 # which is handy for local one-off runs.
 
 if [ "$#" -gt 0 ]; then
-    exec uv python main.py "$@"
+    exec python main.py "$@"
 fi
 
 case "${RUN_MODE:-}" in
     concat)
-        exec uv python main.py --concat
+        exec python main.py --concat
         ;;
     sync)
-        exec uv python main.py --sync
+        exec python main.py --sync
         ;;
     "")
         echo "RUN_MODE is not set. Set RUN_MODE=concat or RUN_MODE=sync (image-level env)," >&2

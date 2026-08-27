@@ -71,10 +71,7 @@ def print_output_paths(output_paths: list[str]) -> None:
             )
         return
 
-    print(
-        "Output: not kept "
-        "because keep_all_concatenated_webm_files=false"
-    )
+    print("Output: none created")
 
 
 def main(

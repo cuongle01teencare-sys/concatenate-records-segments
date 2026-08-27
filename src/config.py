@@ -54,22 +54,21 @@ DATA_PROFILING = get_bool_env(
     False,
 )
 
-# Giữ lại các WebM chunk thành phần đã được download vào temp
-# sau khi FFmpeg ghép xong.
+# Keep downloaded source WebM chunks in temp after FFmpeg finishes.
 KEEP_ALL_WEBM_CHUNKS = get_bool_env(
     "KEEP_ALL_WEBM_CHUNKS",
     False,
 )
 
-# Giữ lại toàn bộ video WebM được ghép ra bằng cách lưu/upload
-# file output sau khi FFmpeg ghép xong.
+# Keep concatenated WebM files on temp disk after they have been saved/uploaded.
+# false still saves/uploads the output, then removes the temp output file.
 KEEP_ALL_CONCATENATED_WEBM_FILES = get_bool_env(
     "KEEP_ALL_CONCATENATED_WEBM_FILES",
     True,
 )
 
-# Giữ lại thư mục temp của student nếu quá trình ghép bị lỗi,
-# để debug các chunk đã download, concat manifest, và file raw nếu có.
+# Keep temp directories when concatenation fails, for debugging downloaded
+# chunks, concat manifests, and raw byte-concat files.
 KEEP_TEMP_ON_FAILURE = get_bool_env(
     "KEEP_TEMP_ON_FAILURE",
     True,
@@ -78,6 +77,5 @@ KEEP_TEMP_ON_FAILURE = get_bool_env(
 
 if ENVIRONMENT not in VALID_ENVIRONMENTS:
     raise ValueError(
-        "ENVIRONMENT chỉ chấp nhận "
-        "'local' hoặc 'container'."
+        "ENVIRONMENT only accepts 'local' or 'container'."
     )

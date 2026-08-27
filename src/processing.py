@@ -336,20 +336,6 @@ def concatenate_participant_video(
 
             return None
 
-        if not keep_all_concatenated_webm_files:
-            if not keep_all_webm_chunks:
-                delete_downloaded_webm_chunks(
-                    files=downloaded_files,
-                    segment_c=segment_c,
-                )
-
-            print(
-                f"[{segment_c}] "
-                "Concatenated WebM was not saved "
-                "because keep_all_concatenated_webm_files=false"
-            )
-            return None
-
         if environment == "local":
             output_path = save_video_local(
                 participant_path=participant_path,
@@ -372,15 +358,26 @@ def concatenate_participant_video(
                 segment_c=segment_c,
             )
 
+        if not keep_all_concatenated_webm_files:
+            delete_concatenated_webm_file(
+                file_path=output_file,
+                label=segment_c,
+            )
+
         return output_path
     except Exception:
         keep_temp = keep_temp_on_failure
         raise
     finally:
-        if keep_temp:
+        preserve_temp = (
+            keep_temp or
+            keep_all_concatenated_webm_files
+        )
+
+        if preserve_temp:
             print(
                 f"[{segment_c}] "
-                f"Kept temp directory for debugging: {temp_path}"
+                f"Kept temp directory: {temp_path}"
             )
         else:
             shutil.rmtree(
@@ -502,21 +499,14 @@ def concatenate_session_video(
             else:
                 participant_outputs.append(participant_output)
 
-                if keep_all_concatenated_webm_files:
-                    output_paths.append(
-                        save_video(
-                            bucket=bucket,
-                            environment=environment,
-                            participant_path=participant_path,
-                            source_file=participant_output,
-                        )
+                output_paths.append(
+                    save_video(
+                        bucket=bucket,
+                        environment=environment,
+                        participant_path=participant_path,
+                        source_file=participant_output,
                     )
-                else:
-                    print(
-                        f"[{segment_c}] "
-                        "Concatenated WebM was not saved "
-                        "because keep_all_concatenated_webm_files=false"
-                    )
+                )
 
             downloaded_chunk_files.extend(downloaded_files)
 
@@ -542,6 +532,13 @@ def concatenate_session_video(
             if failed_session_outputs > 0:
                 keep_temp = keep_temp_on_failure
 
+        if not keep_all_concatenated_webm_files:
+            for participant_output in participant_outputs:
+                delete_concatenated_webm_file(
+                    file_path=participant_output,
+                    label=segment_b,
+                )
+
         if (
             not keep_all_webm_chunks and
             not keep_temp
@@ -560,10 +557,15 @@ def concatenate_session_video(
         keep_temp = keep_temp_on_failure
         raise
     finally:
-        if keep_temp:
+        preserve_temp = (
+            keep_temp or
+            keep_all_concatenated_webm_files
+        )
+
+        if preserve_temp:
             print(
                 f"[{segment_b}] "
-                f"Kept temp directory for debugging: {temp_path}"
+                f"Kept temp directory: {temp_path}"
             )
         else:
             shutil.rmtree(
@@ -690,21 +692,20 @@ def create_session_outputs_after_participant_failure(
                 files=participant_outputs,
             )
         else:
-            if keep_all_concatenated_webm_files:
-                output_paths.append(
-                    save_session_video(
-                        bucket=bucket,
-                        environment=environment,
-                        session_path=session_path,
-                        source_file=from_c_output,
-                        output_name=f"{segment_b}_from_c.webm",
-                    )
+            output_paths.append(
+                save_session_video(
+                    bucket=bucket,
+                    environment=environment,
+                    session_path=session_path,
+                    source_file=from_c_output,
+                    output_name=f"{segment_b}_from_c.webm",
                 )
-            else:
-                print(
-                    f"[{segment_b}] "
-                    "Session WebM from segment_c was not saved "
-                    "because keep_all_concatenated_webm_files=false"
+            )
+
+            if not keep_all_concatenated_webm_files:
+                delete_concatenated_webm_file(
+                    file_path=from_c_output,
+                    label=segment_b,
                 )
     else:
         failed_session_outputs += 1
@@ -743,21 +744,20 @@ def create_session_outputs_after_participant_failure(
             files=downloaded_chunk_files,
         )
     else:
-        if keep_all_concatenated_webm_files:
-            output_paths.append(
-                save_session_video(
-                    bucket=bucket,
-                    environment=environment,
-                    session_path=session_path,
-                    source_file=direct_output,
-                    output_name=f"{segment_b}.webm",
-                )
+        output_paths.append(
+            save_session_video(
+                bucket=bucket,
+                environment=environment,
+                session_path=session_path,
+                source_file=direct_output,
+                output_name=f"{segment_b}.webm",
             )
-        else:
-            print(
-                f"[{segment_b}] "
-                "Direct session WebM was not saved "
-                "because keep_all_concatenated_webm_files=false"
+        )
+
+        if not keep_all_concatenated_webm_files:
+            delete_concatenated_webm_file(
+                file_path=direct_output,
+                label=segment_b,
             )
 
     return SessionProcessingResult(
@@ -890,6 +890,20 @@ def delete_downloaded_webm_chunks(
     print(
         f"[{segment_c}] "
         f"Deleted downloaded WebM chunks from temp: {deleted_files}"
+    )
+
+
+def delete_concatenated_webm_file(
+    *,
+    file_path: Path,
+    label: str,
+) -> None:
+    if not delete_file_if_exists(file_path):
+        return
+
+    print(
+        f"[{label}] "
+        f"Deleted concatenated WebM from temp: {file_path}"
     )
 
 

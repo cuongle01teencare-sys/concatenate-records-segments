@@ -12,6 +12,8 @@ Usage (from the repo root):
     uv run python scripts/concat_mentor_audio.py "gs://meet-captures-2026/captures/<a>/<b>/mentor-audio/"
 
 Output is written locally to ./mentor-audio-output/.
+
+To quickly concat webm from gcs bucket. This script is not meant to replace the whole system.
 """
 
 from __future__ import annotations

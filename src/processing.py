@@ -1,3 +1,4 @@
+import re
 import shutil
 import subprocess
 import tempfile
@@ -13,6 +14,27 @@ from google.cloud.storage.bucket import Bucket
 LOCAL_OUTPUT_ROOT = Path("output")
 
 
+# Regex tách các trường trong tên chunk WebM:
+# chunk-<seq6>-<epoch_ms>-<stream_id_in_name>-<seq4>.webm
+# epoch_ms là Unix timestamp (millisecond) khi chunk được emit.
+CHUNK_NAME_PATTERN = re.compile(
+    r"^chunk-(?P<seq6>\d+)-(?P<epoch_ms>\d+)-"
+    r"(?P<stream_id>[^-]+)-\d+\.webm$"
+)
+
+
+# Regex tách segment_c (tên folder participants):
+# - '2800407418'                  -> stream_id='2800407418', name=None
+# - 'nga__2800407418'              -> stream_id='2800407418', name='nga'
+# - 'tran-ang-viet-anh__24379...'  -> stream_id='24379...',   name='tran-ang-viet-anh'
+# Extension tạo folder id-only khi mới thấy stream, sau khi display name về
+# thì chunk tiếp theo rơi vào folder <name>__<id>. Cả hai folder này thuộc
+# cùng một stream và cần được gộp lại.
+STREAM_KEY_PATTERN = re.compile(
+    r"^(?:(?P<name>.+)__)?(?P<stream_id>\d+)$"
+)
+
+
 @dataclass
 class SessionProcessingResult:
     output_paths: list[str]
@@ -22,6 +44,111 @@ class SessionProcessingResult:
 
 def get_blob_name(blob: Blob) -> str:
     return blob.name or ""
+
+
+def extract_stream_key(segment_c: str) -> str:
+    """
+    Trả stream_id trích từ segment_c (đuôi số). Nếu segment_c không match
+    format có id số (vd 'mentor', 'unknown'), trả nguyên segment_c làm key
+    -> mỗi folder loại này thành nhóm riêng, không bị gộp bừa.
+    """
+    match = STREAM_KEY_PATTERN.match(segment_c)
+    if match is None:
+        return segment_c
+    return match.group("stream_id")
+
+
+def chunk_epoch_sort_key(blob: Blob) -> tuple[int, int, str]:
+    """
+    Sort key primary = epoch_ms, secondary = seq6 (chỉ tiebreaker khi
+    hai chunk cùng millisecond), tertiary = full blob name (deterministic).
+
+    epoch_ms phản ánh đúng thứ tự thời gian recorder emit chunk, không
+    reset khi recorder restart, không phụ thuộc folder anchor.
+    Chunk không parse được đẩy xuống cuối.
+    """
+    name = (blob.name or "").rsplit("/", 1)[-1]
+    match = CHUNK_NAME_PATTERN.match(name)
+    if match is None:
+        return (2**63 - 1, 2**63 - 1, blob.name or "")
+    return (
+        int(match.group("epoch_ms")),
+        int(match.group("seq6")),
+        blob.name or "",
+    )
+
+
+def pick_canonical_participant_path(
+    folder_groups: list[tuple[str, list[Blob]]],
+) -> str:
+    """
+    Chọn participant_path canonical trong nhóm folder cùng stream_id để
+    làm nơi ghi output concatenated.
+
+    Ưu tiên:
+    1. Folder có display_name (chứa '__') hơn folder id-only.
+    2. Folder có nhiều chunk hơn (phản ánh trạng thái ổn định sau khi
+       tên hiển thị đã settle).
+    3. Tên dài hơn.
+    4. Lexicographic — để deterministic.
+    """
+    def score(item: tuple[str, list[Blob]]) -> tuple[bool, int, int, str]:
+        participant_path, blobs = item
+        segment_c = participant_path.split("/")[-1]
+        has_name = "__" in segment_c
+        return (has_name, len(blobs), len(segment_c), segment_c)
+
+    return max(folder_groups, key=score)[0]
+
+
+def group_blobs_by_stream_id(
+    blobs: list[Blob],
+) -> Iterator[tuple[str, list[Blob], list[str]]]:
+    """
+    Gom blob theo stream_id trích từ segment_c. Yield từng nhóm:
+
+        (canonical_participant_path, merged_blobs_sorted, source_segment_cs)
+
+    - canonical_participant_path: folder được chọn làm nơi ghi output
+      (thường là folder có display name).
+    - merged_blobs_sorted: toàn bộ chunk cross-folder cùng stream_id,
+      đã sort theo epoch_ms.
+    - source_segment_cs: list segment_c gốc trong nhóm này (để log rõ
+      những folder nào đã được merge).
+
+    Yield theo thứ tự stream_key sắp xếp, để tiến độ log ổn định.
+    """
+    by_folder: dict[str, list[Blob]] = {}
+    for blob in blobs:
+        parts = (blob.name or "").split("/")
+        # captures/<a>/<b>/participants/<segment_c>/video/<chunk>.webm
+        # -> participant_path = captures/<a>/<b>/participants/<segment_c>
+        participant_path = "/".join(parts[:5])
+        by_folder.setdefault(participant_path, []).append(blob)
+
+    by_stream: dict[str, list[tuple[str, list[Blob]]]] = {}
+    for participant_path, folder_blobs in by_folder.items():
+        segment_c = participant_path.split("/")[-1]
+        stream_key = extract_stream_key(segment_c)
+        by_stream.setdefault(stream_key, []).append(
+            (participant_path, folder_blobs)
+        )
+
+    for stream_key in sorted(by_stream.keys()):
+        folder_groups = by_stream[stream_key]
+        canonical_path = pick_canonical_participant_path(folder_groups)
+
+        merged: list[Blob] = []
+        for _, folder_blobs in folder_groups:
+            merged.extend(folder_blobs)
+        merged.sort(key=chunk_epoch_sort_key)
+
+        source_segment_cs = sorted(
+            participant_path.split("/")[-1]
+            for participant_path, _ in folder_groups
+        )
+
+        yield canonical_path, merged, source_segment_cs
 
 
 def session_has_non_empty_concatenated_webm(
@@ -481,10 +608,20 @@ def concatenate_session_video(
         participant_outputs: list[Path] = []
         downloaded_chunk_files: list[Path] = []
 
-        for participant_path, participant_blobs in group_blobs_by_participant(
-            ordered_blobs
-        ):
-            segment_c = participant_path.split("/")[-1]
+        for (
+            canonical_participant_path,
+            participant_blobs,
+            source_segment_cs,
+        ) in group_blobs_by_stream_id(ordered_blobs):
+            segment_c = canonical_participant_path.split("/")[-1]
+
+            if len(source_segment_cs) > 1:
+                print(
+                    f"[{segment_b}] "
+                    f"Merged {len(source_segment_cs)} folder(s) into stream "
+                    f"'{segment_c}': {source_segment_cs}"
+                )
+
             participant_temp_path = (
                 temp_path /
                 "participants" /
@@ -493,7 +630,8 @@ def concatenate_session_video(
 
             print(
                 f"[{segment_b}] "
-                f"Concatenating participant {segment_c}"
+                f"Concatenating participant {segment_c} "
+                f"({len(participant_blobs)} chunk)"
             )
 
             downloaded_files = download_student_blobs(
@@ -520,7 +658,8 @@ def concatenate_session_video(
                 invalid_webm_backlog.append(
                     "\n".join(
                         [
-                            f"participant_path={participant_path}",
+                            f"canonical_participant_path={canonical_participant_path}",
+                            f"source_segment_cs={source_segment_cs}",
                             f"session_path={session_path}",
                             f"segment_c={segment_c}",
                             f"segment_b={segment_b}",
@@ -548,7 +687,7 @@ def concatenate_session_video(
                     save_video(
                         bucket=bucket,
                         environment=environment,
-                        participant_path=participant_path,
+                        participant_path=canonical_participant_path,
                         source_file=participant_output,
                     )
                 )
@@ -895,10 +1034,12 @@ def download_student_blobs(
         blob_name = get_blob_name(blob)
         original_file_name = blob_name.rsplit("/", 1)[-1]
 
-        # Giữ tên chunk gốc để debug lỗi FFmpeg.
+        # Prefix rank vào tên file trên disk:
+        # 1. Tránh trùng tên khi chunk được gộp từ nhiều folder khác nhau.
+        # 2. Thứ tự trên disk khớp thứ tự sort trong list -> dễ debug.
         destination_file = (
             destination /
-            original_file_name
+            f"{index:06d}_{original_file_name}"
         )
 
         print(

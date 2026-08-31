@@ -274,7 +274,10 @@ def _run_locked(
     if sync_after and sync_glob:
         print(f"[async {job_id}] BẮT ĐẦU sync record_link | glob={sync_glob}")
         _do_sync(sync_glob)
-        print(f"[async {job_id}] sync XONG -> record_link đã ghi vào Supabase")
+        print(
+            f"[async {job_id}] sync XONG "
+            f"(kết quả ghi/backlog xem block [supabase] ở trên)"
+        )
     elif sync_after and not sync_glob:
         print(
             f"[async {job_id}] BỎ QUA sync: không suy ra được sync_glob "

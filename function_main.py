@@ -16,6 +16,7 @@ Cloud Run Service với RUN_MODE=serve. Xem README-cloud-function.md.
 """
 
 import io
+import sys
 import json
 import contextlib
 
@@ -58,6 +59,31 @@ def _json_response(body: dict, status: int):
     )
 
 
+class _Tee(io.TextIOBase):
+    """Ghi song song ra nhiều stream. Dùng để vừa in ra stdout thật (Cloud
+    Logging thấy tiến trình ngay lập tức) vừa gom vào buffer để trả trong
+    field "log" của response."""
+
+    def __init__(self, *streams):
+        self._streams = [s for s in streams if s is not None]
+
+    def write(self, data):
+        for stream in self._streams:
+            try:
+                stream.write(data)
+                stream.flush()
+            except Exception:
+                pass
+        return len(data)
+
+    def flush(self):
+        for stream in self._streams:
+            try:
+                stream.flush()
+            except Exception:
+                pass
+
+
 @functions_framework.http
 def handle(request):
     if request.method != "POST":
@@ -86,12 +112,14 @@ def handle(request):
             400,
         )
 
-    # Bắt toàn bộ output in ra stdout của main()/run_sync() để trả về làm log.
+    # Tee: vẫn in ra stdout THẬT (Cloud Logging thấy tiến trình live) đồng thời
+    # gom vào buffer để trả trong field "log".
     buffer = io.StringIO()
+    tee = _Tee(sys.__stdout__, buffer)
     output_paths: list[str] = []
 
     try:
-        with contextlib.redirect_stdout(buffer):
+        with contextlib.redirect_stdout(tee):
             if mode == "concat":
                 output_paths = run_concat(
                     project_id=PROJECT_ID,
@@ -121,7 +149,7 @@ def handle(request):
                 "mode": mode,
                 "match_glob": match_glob,
                 "error": f"{type(error).__name__}: {error}",
-                "log": buffer.getvalue(),
+                "log": buffer.getvalue()[-40000:],
             },
             500,
         )
@@ -141,7 +169,7 @@ def handle(request):
             "match_glob": match_glob,
             "count": len(files),
             "files": files,
-            "log": buffer.getvalue(),
+            "log": buffer.getvalue()[-40000:],
         },
         200,
     )

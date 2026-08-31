@@ -21,6 +21,7 @@ import json
 import contextlib
 
 import functions_framework
+from google.cloud import storage
 
 from src.config import (
     PROJECT_ID,
@@ -49,6 +50,53 @@ def _to_gs_uri(path: str) -> str:
     if clean.startswith("output/"):
         clean = clean[len("output/"):]
     return f"gs://{BUCKET_NAME}/{clean}"
+
+
+_ALLOWED_SELECT = {"all", "largest", "direct", "from_c"}
+_size_client = None
+
+
+def _get_size_client():
+    global _size_client
+    if _size_client is None:
+        _size_client = storage.Client(project=PROJECT_ID)
+    return _size_client
+
+
+def _blob_size(gs_uri: str) -> int:
+    try:
+        bucket_name, _, blob_name = gs_uri[len("gs://"):].partition("/")
+        blob = _get_size_client().bucket(bucket_name).get_blob(blob_name)
+        return (blob.size or 0) if blob is not None else 0
+    except Exception:
+        return 0
+
+
+def _is_from_c(gs_uri: str) -> bool:
+    name = gs_uri.rsplit("/", 1)[-1]
+    if name.lower().endswith(".webm"):
+        name = name[: -len(".webm")]
+    return name.endswith("_from_c")
+
+
+def _select_files(files: list[str], select: str) -> list[str]:
+    """Lọc danh sách video session theo yêu cầu:
+      all     -> giữ nguyên (cả direct lẫn _from_c)
+      direct  -> chỉ bản ghép trực tiếp <b>.webm
+      from_c  -> chỉ bản <b>_from_c.webm
+      largest -> chỉ cái dung lượng lớn nhất (giống logic sync)
+    Nếu bộ lọc không khớp gì thì fallback trả nguyên danh sách."""
+    if select == "all" or len(files) <= 1:
+        return files
+    if select == "direct":
+        picked = [f for f in files if not _is_from_c(f)]
+        return picked or files
+    if select == "from_c":
+        picked = [f for f in files if _is_from_c(f)]
+        return picked or files
+    if select == "largest":
+        return [max(files, key=_blob_size)]
+    return files
 
 
 def _json_response(body: dict, status: int):
@@ -112,6 +160,16 @@ def handle(request):
             400,
         )
 
+    select = str(payload.get("select") or "all").lower().strip()
+    if select not in _ALLOWED_SELECT:
+        return _json_response(
+            {
+                "ok": False,
+                "error": "select phải là 'all', 'largest', 'direct' hoặc 'from_c'.",
+            },
+            400,
+        )
+
     # Tee: vẫn in ra stdout THẬT (Cloud Logging thấy tiến trình live) đồng thời
     # gom vào buffer để trả trong field "log".
     buffer = io.StringIO()
@@ -132,6 +190,7 @@ def handle(request):
                         _SERVE_KEEP_ALL_CONCATENATED_WEBM_FILES
                     ),
                     keep_temp_on_failure=_SERVE_KEEP_TEMP_ON_FAILURE,
+                    return_existing_session_outputs=True,
                 )
             else:
                 run_sync(
@@ -160,13 +219,15 @@ def handle(request):
     #   session-level:     captures/<a>/<b>/concatenated/<b>.webm (và <b>_from_c.webm)
     #   participant-level: captures/<a>/<b>/participants/<c>/concatenated/<c>.webm
     # -> loại mọi đường dẫn có "/participants/".
-    files = [f for f in all_files if "/participants/" not in f]
+    session_files = [f for f in all_files if "/participants/" not in f]
+    files = _select_files(session_files, select)
 
     return _json_response(
         {
             "ok": True,
             "mode": mode,
             "match_glob": match_glob,
+            "select": select,
             "count": len(files),
             "files": files,
             "log": buffer.getvalue()[-40000:],

@@ -106,6 +106,7 @@ def main(
     keep_all_webm_chunks: bool,
     keep_all_concatenated_webm_files: bool,
     keep_temp_on_failure: bool,
+    return_existing_session_outputs: bool = False,
 ) -> list[str]:
     started_at = datetime.now()
 
@@ -157,6 +158,18 @@ def main(
                 session_path=session_path,
             ):
                 skipped_existing_sessions += 1
+                if return_existing_session_outputs:
+                    # API muốn nhận URI dù session đã ghép sẵn: liệt kê các
+                    # video CẤP SESSION đang tồn tại tại <session>/concatenated/.
+                    existing_prefix = (
+                        f"{session_path.rstrip('/')}/concatenated/"
+                    )
+                    for existing in bucket.list_blobs(prefix=existing_prefix):
+                        existing_name = existing.name or ""
+                        if existing_name.lower().endswith(".webm"):
+                            all_output_paths.append(
+                                f"gs://{bucket.name}/{existing_name}"
+                            )
                 continue
 
             print()

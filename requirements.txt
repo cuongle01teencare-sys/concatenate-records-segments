@@ -1,0 +1,4 @@
+functions-framework>=3.8.0
+google-cloud-storage>=3.13.1
+python-dotenv>=1.2.1
+supabase>=2.31.0

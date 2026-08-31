@@ -106,7 +106,7 @@ def main(
     keep_all_webm_chunks: bool,
     keep_all_concatenated_webm_files: bool,
     keep_temp_on_failure: bool,
-) -> None:
+) -> list[str]:
     started_at = datetime.now()
 
     now_date_str = started_at.strftime("%Y-%m-%d")
@@ -122,11 +122,12 @@ def main(
 
     if data_profiling:
         profile_data(bucket)
-        return
+        return []
 
     should_process_but_no: list[str] = []
     should_not_process_but_yes: list[str] = []
     invalid_webm_backlog_entries: list[str] = []
+    all_output_paths: list[str] = []
 
     processed_items = 0
     skipped_existing_sessions = 0
@@ -202,6 +203,7 @@ def main(
                 )
 
             processed_items += 1
+            all_output_paths.extend(result.output_paths)
 
             print(f"Finished session {label}")
             print_output_paths(result.output_paths)
@@ -314,6 +316,8 @@ def main(
         f"{failed_session_outputs}"
     )
     print("==============================")
+
+    return all_output_paths
 
 
 def run_sync(

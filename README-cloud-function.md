@@ -119,3 +119,56 @@ uv run functions-framework --target=handle --source=function_main.py --port=8080
 curl -X POST localhost:8080 -H 'Content-Type: application/json' \
   -d '{"mode":"sync","match_glob":"captures/aex-cqbn-hxi/.../concatenated/*.webm"}'
 ```
+
+---
+
+# ASYNC + tự ghi record_link (cho KNS)
+
+## Payload async (mode=concat)
+```json
+{
+  "mode": "concat",
+  "async": true,
+  "sync_after": true,
+  "select": "largest",
+  "meeting_url": "https://meet.google.com/aex-cqbn-hxi",
+  "date": "2026-08-19"
+}
+```
+- `meeting_url` + `date` → service tự build glob `captures/<meet_code>/session-<date>T*/participants/*/video/**/*.webm` (wildcard giờ; KNS `session_date` chỉ có ngày nên khỏi cắt giờ). Có thể truyền thẳng `match_glob` thay cho meeting_url+date.
+- `async: true` → trả **202 ngay**, ghép + sync chạy ở **background thread**.
+- `sync_after: true` → sau khi ghép, chạy `run_sync` trên `.../concatenated/*.webm` để ghi `record_link` (gs:// của video lớn nhất) vào Supabase.
+- Có **lock trên GCS** (`locks/concat/<hash>.lock`, TTL 30') chống ghép trùng khi nhiều request cùng session.
+
+## Bảo mật: shared secret
+Service check header nếu env `INVOKE_SHARED_SECRET` được set:
+`Authorization: Bearer <secret>` (hoặc header `X-Service-Secret`). Không set thì bỏ qua (dùng khi vẫn để IAM).
+
+## Deploy cho async (BẮT BUỘC --no-cpu-throttling)
+Async chạy nền SAU khi trả response → phải để CPU luôn cấp phát, nếu không task nền bị bóp CPU và ngừng giữa chừng:
+```bash
+export IMAGE="asia-east1-docker.pkg.dev/tcservices2027/cloud-run-source-deploy/concatenate-records-segments:$(git rev-parse --short HEAD)"
+docker buildx build --platform linux/amd64 -t "$IMAGE" --push .
+gcloud run deploy concatenate-records-segments --image "$IMAGE" \
+  --region asia-east1 --project tcservices2027 \
+  --memory 4Gi --cpu 2 --timeout 3600 --concurrency 1 \
+  --no-cpu-throttling \
+  --allow-unauthenticated \
+  --set-env-vars RUN_MODE=serve,ENVIRONMENT=container,PROJECT_ID=tcservices2027,BUCKET_NAME=meet-captures-2026,SUPABASE_API_URL=https://ktbzdpbvthnejqjoueln.supabase.co,INVOKE_SHARED_SECRET=<đặt-secret-mạnh> \
+  --set-secrets SUPABASE_API_KEY=SUPABASE_API_KEY:latest
+```
+(`--allow-unauthenticated` + `INVOKE_SHARED_SECRET` = pattern shared-secret giống các service khác trong repo. Muốn chặt hơn thì giữ IAM `--no-allow-unauthenticated` và bỏ secret, nhưng backend Netlify/Vercel sẽ phải tự ký ID token.)
+
+## Env phía ParentApp (Netlify/Vercel)
+```
+CONCAT_SERVICE_URL=https://concatenate-records-segments-588651614395.asia-east1.run.app
+CONCAT_SERVICE_SECRET=<đúng bằng INVOKE_SHARED_SECRET>
+```
+
+## Test async
+```bash
+curl -sS -X POST "$URL" -H "Authorization: Bearer <secret>" -H "Content-Type: application/json" \
+  -d '{"mode":"concat","async":true,"sync_after":true,"select":"largest","meeting_url":"https://meet.google.com/aex-cqbn-hxi","date":"2026-08-19"}'
+# -> 202 {"status":"processing","job_id":"..."} ngay lập tức.
+# Xem tiến trình nền trong Cloud Logging: [async <job_id>] ...
+```

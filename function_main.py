@@ -371,12 +371,14 @@ def handle(request):
     # (dùng khi service vẫn để IAM --no-allow-unauthenticated).
     secret = os.getenv("INVOKE_SHARED_SECRET")
     if secret:
-        auth_header = request.headers.get("Authorization", "")
-        provided = (
-            auth_header[len("Bearer "):]
-            if auth_header.startswith("Bearer ")
-            else request.headers.get("X-Service-Secret", "")
-        )
+        # Đọc secret từ header RIÊNG X-Service-Secret để KHÔNG đụng Authorization
+        # (Authorization dành cho Cloud Run IAM = id token). Chỉ khi service để
+        # public không IAM thì mới fallback đọc secret từ Authorization: Bearer.
+        provided = request.headers.get("X-Service-Secret", "")
+        if not provided:
+            auth_header = request.headers.get("Authorization", "")
+            if auth_header.startswith("Bearer "):
+                provided = auth_header[len("Bearer "):]
         if provided != secret:
             return _json_response({"ok": False, "error": "Unauthorized."}, 401)
 

@@ -126,7 +126,13 @@ def handle(request):
             500,
         )
 
-    files = [_to_gs_uri(p) for p in output_paths]
+    all_files = [_to_gs_uri(p) for p in output_paths]
+
+    # Chỉ trả video CẤP SESSION (segment_b), bỏ video cấp participant (segment_c).
+    #   session-level:     captures/<a>/<b>/concatenated/<b>.webm (và <b>_from_c.webm)
+    #   participant-level: captures/<a>/<b>/participants/<c>/concatenated/<c>.webm
+    # -> loại mọi đường dẫn có "/participants/".
+    files = [f for f in all_files if "/participants/" not in f]
 
     return _json_response(
         {

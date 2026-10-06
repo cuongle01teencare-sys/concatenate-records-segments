@@ -8,6 +8,7 @@ from google.cloud.storage.blob import Blob
 from google.cloud.storage.bucket import Bucket
 from supabase import Client
 
+from src.processing import is_session_audio_output
 from src.utils.logging_utils import write_log
 from src.utils.storage_utils import upload_from_string
 
@@ -133,6 +134,11 @@ def select_largest_session_videos(
                 "Skipped non session-level concatenated WebM: "
                 f"{blob_name}"
             )
+            continue
+
+        if is_session_audio_output(blob_name):
+            # File audio ghép (shared_audio / mentor_audio) không phải video
+            # của session -> không được chọn làm record_link.
             continue
 
         blob_size = get_blob_size(session_video)

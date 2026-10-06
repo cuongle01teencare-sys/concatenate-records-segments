@@ -5,6 +5,7 @@ set -eu
 # It selects what this container does:
 #   RUN_MODE=concat  ->  python main.py --concat        (batch job)
 #   RUN_MODE=sync    ->  python main.py --sync          (batch job)
+#   RUN_MODE=concat-audio -> python main.py --concat-audio (batch job)
 #   RUN_MODE=serve   ->  functions-framework HTTP server (Cloud Run Service /
 #                        Cloud Function). Nhận POST với payload glob pattern.
 #
@@ -26,6 +27,9 @@ case "${RUN_MODE:-}" in
     sync)
         exec python main.py --sync
         ;;
+    concat-audio)
+        exec python main.py --concat-audio
+        ;;
     serve)
         exec functions-framework \
             --target=handle \
@@ -39,7 +43,7 @@ case "${RUN_MODE:-}" in
         exit 1
         ;;
     *)
-        echo "Invalid RUN_MODE='${RUN_MODE}'. Expected 'concat', 'sync' or 'serve'." >&2
+        echo "Invalid RUN_MODE='${RUN_MODE}'. Expected 'concat', 'sync', 'concat-audio' or 'serve'." >&2
         exit 1
         ;;
 esac

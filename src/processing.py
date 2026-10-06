@@ -14,6 +14,26 @@ from google.cloud.storage.bucket import Bucket
 LOCAL_OUTPUT_ROOT = Path("output")
 
 
+# Folder audio nằm ngay dưới segment_b -> kind chuẩn hoá (dùng cho tên output).
+AUDIO_FOLDER_KINDS = {
+    "shared_audio": "shared_audio",
+    "shared-audio": "shared_audio",
+    "mentor_audio": "mentor_audio",
+    "mentor-audio": "mentor_audio",
+}
+
+# Hậu tố của file audio ghép trong <segment_b>/concatenated/.
+SESSION_AUDIO_OUTPUT_SUFFIXES = tuple(
+    f"_{kind}.webm" for kind in sorted(set(AUDIO_FOLDER_KINDS.values()))
+)
+
+
+def is_session_audio_output(blob_name: str) -> bool:
+    """True nếu là file audio ghép (không phải video) trong concatenated/.
+    Dùng để video-concat / sync không nhầm audio thành video của session."""
+    return blob_name.lower().endswith(SESSION_AUDIO_OUTPUT_SUFFIXES)
+
+
 # Regex tách các trường trong tên chunk WebM:
 # chunk-<seq6>-<epoch_ms>-<stream_id_in_name>-<seq4>.webm
 # epoch_ms là Unix timestamp (millisecond) khi chunk được emit.
@@ -167,6 +187,9 @@ def session_has_non_empty_concatenated_webm(
         blob_name = get_blob_name(blob)
 
         if not blob_name.lower().endswith(".webm"):
+            continue
+
+        if is_session_audio_output(blob_name):
             continue
 
         size = blob.size
@@ -789,6 +812,7 @@ def save_session_video(
     session_path: str,
     source_file: Path,
     output_name: str,
+    content_type: str = "video/webm",
 ) -> str:
     if environment == "local":
         return save_session_video_local(
@@ -803,6 +827,7 @@ def save_session_video(
             session_path=session_path,
             source_file=source_file,
             output_name=output_name,
+            content_type=content_type,
         )
 
     raise ValueError(
@@ -1445,6 +1470,7 @@ def save_session_video_to_gcs(
     session_path: str,
     source_file: Path,
     output_name: str,
+    content_type: str = "video/webm",
 ) -> str:
     """
     Container:
@@ -1470,7 +1496,7 @@ def save_session_video_to_gcs(
 
     output_blob.upload_from_filename(
         str(source_file),
-        content_type="video/webm",
+        content_type=content_type,
     )
 
     gcs_uri = (

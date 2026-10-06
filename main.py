@@ -10,6 +10,7 @@ from src.processing import (
     iter_session_groups,
     session_has_non_empty_concatenated_webm,
     concatenate_session_video,
+    is_session_audio_output,
 )
 
 # CLI:
@@ -166,7 +167,10 @@ def main(
                     )
                     for existing in bucket.list_blobs(prefix=existing_prefix):
                         existing_name = existing.name or ""
-                        if existing_name.lower().endswith(".webm"):
+                        if (
+                            existing_name.lower().endswith(".webm")
+                            and not is_session_audio_output(existing_name)
+                        ):
                             all_output_paths.append(
                                 f"gs://{bucket.name}/{existing_name}"
                             )
@@ -392,11 +396,32 @@ def build_arg_parser():
         help="Traverse blobs by MATCH_GLOB and concatenate session videos.",
     )
     group.add_argument(
+        "--concat-audio",
+        dest="concat_audio",
+        action="store_true",
+        help=(
+            "Với mỗi segment_b, ghép chunk trong shared_audio/ và "
+            "mentor_audio/ thành <segment_b>_shared_audio.webm / "
+            "<segment_b>_mentor_audio.webm trong concatenated/ của session."
+        ),
+    )
+    group.add_argument(
         "--sync",
         action="store_true",
         help=(
             "Traverse blobs by SUPABASE_SYNC_MATCH_GLOB and sync record_link "
             "into Supabase."
+        ),
+    )
+    parser.add_argument(
+        "--glob",
+        dest="match_glob",
+        default=None,
+        help=(
+            "Override glob pattern. Với --concat thay MATCH_GLOB, với --sync "
+            "thay SUPABASE_SYNC_MATCH_GLOB, với --concat-audio thay "
+            "AUDIO_MATCH_GLOB (mặc định captures/*/*/*audio/**/*.webm). Vd: "
+            "\"captures/aex-cqbn-hxi/session-2026-08-19T*/participants/*/video/**/*.webm\""
         ),
     )
     return parser
@@ -419,23 +444,44 @@ if __name__ == "__main__":
 
     args = build_arg_parser().parse_args()
 
-    if args.sync:
+    if args.concat_audio:
+        import os
+
+        from src.audio_processing import (
+            DEFAULT_AUDIO_MATCH_GLOB,
+            run_audio_concat,
+        )
+
+        audio_glob = (
+            args.match_glob
+            or os.getenv("AUDIO_MATCH_GLOB")
+            or DEFAULT_AUDIO_MATCH_GLOB
+        )
+        print(f"Running audio concatenation | glob={audio_glob}")
+        audio_summary = run_audio_concat(
+            bucket=storage.Client(project=PROJECT_ID).bucket(BUCKET_NAME),
+            environment=ENVIRONMENT,
+            match_glob=audio_glob,
+        )
+        if audio_summary.failed:
+            raise SystemExit(1)
+    elif args.sync:
         run_sync(
             project_id=PROJECT_ID,
             bucket_name=BUCKET_NAME,
             environment=ENVIRONMENT,
             supabase_api_url=SUPABASE_API_URL,
             supabase_api_key=SUPABASE_API_KEY,
-            supabase_sync_match_glob=SUPABASE_SYNC_MATCH_GLOB,
+            supabase_sync_match_glob=args.match_glob or SUPABASE_SYNC_MATCH_GLOB,
         )
     else:
-        print("Running concatenation")
+        print(f"Running concatenation | glob={args.match_glob or MATCH_GLOB}")
         main(
             project_id=PROJECT_ID,
             bucket_name=BUCKET_NAME,
             environment=ENVIRONMENT,
             data_profiling=DATA_PROFILING,
-            match_glob=MATCH_GLOB,
+            match_glob=args.match_glob or MATCH_GLOB,
             keep_all_webm_chunks=KEEP_ALL_WEBM_CHUNKS,
             keep_all_concatenated_webm_files=(
                 KEEP_ALL_CONCATENATED_WEBM_FILES

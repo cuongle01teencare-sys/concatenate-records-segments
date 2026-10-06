@@ -172,3 +172,25 @@ curl -sS -X POST "$URL" -H "Authorization: Bearer <secret>" -H "Content-Type: ap
 # -> 202 {"status":"processing","job_id":"..."} ngay lập tức.
 # Xem tiến trình nền trong Cloud Logging: [async <job_id>] ...
 ```
+
+---
+
+# Ghép audio cấp session (`--concat-audio`)
+
+Với mỗi segment_b, ghép chunk trong `shared_audio/` và `mentor_audio/`
+(chấp nhận cả `shared-audio` / `mentor-audio`) rồi lưu vào `concatenated/` của session:
+
+```
+captures/<a>/<b>/shared_audio/**/*.webm -> captures/<a>/<b>/concatenated/<b>_shared_audio.webm
+captures/<a>/<b>/mentor_audio/**/*.webm -> captures/<a>/<b>/concatenated/<b>_mentor_audio.webm
+```
+
+```bash
+uv run python main.py --concat-audio --glob "captures/aex-cqbn-hxi/session-2026-08-19T*/*audio/**/*.webm"
+# không truyền --glob -> AUDIO_MATCH_GLOB hoặc mặc định captures/*/*/*audio/**/*.webm (toàn bucket)
+# Docker/Cloud Run Job: RUN_MODE=concat-audio
+```
+- Chunk sort theo `epoch_ms` trong tên (`chunk-<seq>-<epoch_ms>-...`), fallback theo tên blob.
+- Output đã tồn tại (không rỗng) -> bỏ qua. Muốn ghép lại thì xoá file output trước.
+- File `*_shared_audio.webm` / `*_mentor_audio.webm` được loại khỏi: điều kiện skip của
+  `--concat` video và việc chọn video lớn nhất của `--sync` (không bao giờ thành `record_link`).

@@ -11,6 +11,32 @@ rồi trả kết quả về.
 - `functions-framework` vào `pyproject.toml` + `uv.lock` + `requirements.txt`.
 - `Dockerfile` copy thêm `function_main.py`.
 
+## Dựng video cả buổi (mặc định cho payload có meet + date)
+
+`mode=concat` kèm `meeting_url`/`meet_code` + `date` (đúng payload app phụ huynh gửi) giờ
+chạy `src/composite.py` thay cho cách nối đuôi cũ:
+
+- gom mảnh của mọi capture session trong ngày (giờ VN) của Meet code đó;
+- camera học sinh xếp lưới, mỗi đoạn đặt đúng giờ thật (học sinh vào muộn thì ô của bạn
+  đó sáng lên muộn), tiếng mentor (mỗi giây lấy recorder to nhất) trộn với tiếng phía
+  học sinh nếu extension thu được;
+- ra MP4 H.264/AAC tại `captures/<meet>/composite/<date>/<meet>_<date>.mp4`;
+- `sync_after` (mặc định bật) đọc `kns_class_sessions` trước khi dựng:
+  - buổi đã có link Drive bản ghi Google Meet (Apps Script ghi) hay link dán tay: không dựng,
+    trả 200 `{"status": "skipped", "reason": "has_record_link"}`;
+  - không tìm được đúng một buổi (`no_match` / `multiple_matches`): cũng không dựng;
+  - `record_link` trống hoặc còn là `gs://` (`_from_c.webm` cũ): dựng rồi ghi link bản dựng.
+    Câu UPDATE kèm điều kiện trống/`gs://` nên link Drive ghi vào trong lúc đang dựng
+    không bị đè.
+- Buổi được tìm theo meet code nằm trong `meeting_url` (cột này có dạng `http://`, thiếu
+  scheme, `?hs=...`).
+
+Không có camera / màn hình chia sẻ của mentor (extension chỉ thu luồng nhận về).
+Cách cũ vẫn chạy khi chỉ truyền `match_glob` hoặc `mode=concat_legacy`.
+
+CLI: `uv run python main.py --composite --meet fji-qahg-tbd --date 2026-10-28 [--force] [--no-sync]`.
+Một buổi 66 phút: ~7 phút trên 2 vCPU.
+
 ## API
 `POST /` với JSON:
 ```json

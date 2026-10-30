@@ -21,6 +21,12 @@ Build glob từ meet_code + date (khi không truyền match_glob):
 `session-<date>T*` wildcard toàn bộ phần giờ + -tab-<num> nên khớp mọi session
 của meet_code đó trong ngày (tên folder có giờ không khớp giờ thật cũng OK).
 
+mode=concat có meet_code/meeting_url + date (đúng payload app phụ huynh gửi) thì dựng
+video cả buổi bằng src/composite.py: lưới camera học sinh theo giờ thật + tiếng mentor
+và học sinh, MP4 tại captures/<meet>/composite/<date>/. `date` hiểu là ngày giờ VN
+(kns_class_sessions.session_date). Chỉ truyền match_glob, hoặc mode=concat_legacy, thì
+chạy cách ghép cũ (nối đuôi từng luồng thành _from_c.webm).
+
 ASYNC: async=true trả 202 ngay rồi ghép + sync ở BACKGROUND THREAD. Điều này chỉ
 chạy đúng trên Cloud Run nếu deploy với CPU luôn cấp phát:
     gcloud run deploy ... --no-cpu-throttling
@@ -29,6 +35,7 @@ Nếu không, CPU bị bóp sau khi trả response và task nền sẽ ngừng g
 
 import io
 import os
+import re
 import sys
 import json
 import time
@@ -51,6 +58,7 @@ from src.config import (
     SUPABASE_API_KEY,
 )
 from main import main as run_concat, run_sync
+from src.composite import VN_TZ, build_and_upload_class_composite
 
 # Server chạy dài KHÔNG được giữ temp: /tmp trên Cloud Run là RAM-backed, mỗi
 # request để lại chunk + video ghép sẽ tích dần tới OOM. Việc upload lên GCS
@@ -131,8 +139,13 @@ def _session_files_from_outputs(output_paths: list[str]) -> list[str]:
 # Helpers: build glob từ meet_code + ngày
 # ---------------------------------------------------------------------------
 
+_MEET_CODE = re.compile(r"[a-z]{3}-[a-z]{4}-[a-z]{3}", re.IGNORECASE)
+
+
 def _meet_code_from_url(meet_url: str) -> str:
-    return meet_url.rstrip("/").split("/")[-1]
+    # meeting_url trong DB có cả dạng http://, thiếu scheme, đuôi ?hs=..., tel.meet/...
+    found = _MEET_CODE.search(meet_url)
+    return found.group(0).lower() if found else meet_url.rstrip("/").split("/")[-1]
 
 
 def _to_utc_date(value: str) -> str:
@@ -184,6 +197,28 @@ def _resolve_match_glob(payload: dict) -> tuple[str | None, str | None]:
             "('date'|'scheduled_start')."
         )
     return _build_concat_glob(str(meet_code), _to_utc_date(str(raw_date))), None
+
+
+def _resolve_class(payload: dict) -> tuple[str, str] | None:
+    """(meet_code, ngày VN) cho cách dựng cả buổi; None nếu payload chỉ có match_glob."""
+    meet_code = payload.get("meet_code")
+    if not meet_code and payload.get("meeting_url"):
+        meet_code = _meet_code_from_url(str(payload["meeting_url"]))
+    if not meet_code:
+        return None
+    raw = str(payload.get("date") or "").strip()
+    if len(raw) == 10 and raw[4] == "-" and raw[7] == "-":
+        return str(meet_code), raw
+    start = str(payload.get("scheduled_start") or "").strip()
+    if not start:
+        return None
+    try:
+        moment = datetime.fromisoformat(start.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if moment.tzinfo is not None:
+        moment = moment.astimezone(VN_TZ)
+    return str(meet_code), moment.date().isoformat()
 
 
 # ---------------------------------------------------------------------------
@@ -253,6 +288,70 @@ def _do_sync(sync_glob: str) -> None:
         supabase_api_key=SUPABASE_API_KEY,
         supabase_sync_match_glob=sync_glob,
     )
+
+
+def _supabase_client():
+    if not (SUPABASE_API_URL and SUPABASE_API_KEY):
+        print("[composite] thiếu SUPABASE_API_URL / SUPABASE_API_KEY: không đọc / ghi record_link")
+        return None
+    from supabase import create_client
+
+    return create_client(SUPABASE_API_URL, SUPABASE_API_KEY)
+
+
+def _composite_skip_reason(meet_code: str, vn_date: str) -> str | None:
+    """Buổi đã có link Drive bản Meet (hoặc không tìm thấy buổi) thì khỏi dựng."""
+    client = _supabase_client()
+    if client is None:
+        return None
+    from src.supabase import composite_skip_reason
+
+    return composite_skip_reason(supabase_client=client, meet_code=meet_code, vn_date=vn_date)
+
+
+def _do_composite(meet_code: str, vn_date: str, sync_after: bool) -> tuple[str | None, str]:
+    """Dựng + upload, sync_after thì ghi record_link. Trả (gs:// bản dựng, kết quả ghi DB)."""
+    uri = build_and_upload_class_composite(
+        bucket=_get_storage_client().bucket(BUCKET_NAME),
+        meet_code=meet_code,
+        vn_date=vn_date,
+    )
+    if not uri:
+        return None, "no_capture"
+    client = _supabase_client() if sync_after else None
+    if client is None:
+        return uri, "not_synced"
+    from src.supabase import sync_composite_record_link
+
+    action = sync_composite_record_link(
+        supabase_client=client,
+        meet_code=meet_code,
+        vn_date=vn_date,
+        record_link=uri,
+    )
+    print(f"[composite] sync {meet_code} {vn_date}: {action}")
+    return uri, action
+
+
+def _background_composite(*, job_id: str, lock_key: str, meet_code: str,
+                          vn_date: str, sync_after: bool) -> None:
+    started = time.time()
+    print(f"[async {job_id}] xếp hàng composite {meet_code} {vn_date}")
+    try:
+        with _bg_semaphore:
+            print(f"[async {job_id}] BẮT ĐẦU composite {meet_code} {vn_date}")
+            uri, action = _do_composite(meet_code, vn_date, sync_after)
+            print(
+                f"[async {job_id}] HOÀN TẤT sau {time.time() - started:.1f}s "
+                f"| file={uri} | sync={action}"
+            )
+    except Exception as error:
+        print(
+            f"[async {job_id}] LỖI {type(error).__name__}: {error}\n"
+            f"{traceback.format_exc()}"
+        )
+    finally:
+        _release_lock(lock_key)
 
 
 def _run_locked(
@@ -362,6 +461,74 @@ def _as_bool(value) -> bool:
 # Handler
 # ---------------------------------------------------------------------------
 
+def _handle_composite(payload: dict, meet_code: str, vn_date: str):
+    sync_after = _as_bool(payload.get("sync_after")) if "sync_after" in payload else True
+    lock_key = f"composite:{meet_code}:{vn_date}"
+
+    # Có sync_after thì đích là record_link: buổi đã có link Drive bản ghi Meet thì
+    # không dựng nữa, chỉ dựng khi record_link còn trống / còn là gs://.
+    if sync_after:
+        try:
+            reason = _composite_skip_reason(meet_code, vn_date)
+        except Exception as error:
+            return _json_response(
+                {"ok": False, "mode": "concat", "meet_code": meet_code, "date": vn_date,
+                 "error": f"Đọc kns_class_sessions lỗi: {type(error).__name__}: {error}"},
+                500,
+            )
+        if reason:
+            print(f"[composite] BỎ QUA {meet_code} {vn_date}: {reason}")
+            return _json_response(
+                {"ok": True, "mode": "concat", "status": "skipped", "reason": reason,
+                 "meet_code": meet_code, "date": vn_date},
+                200,
+            )
+
+    if _as_bool(payload.get("async")):
+        if not _acquire_lock(lock_key):
+            print(f"[async] BỎ QUA: đã có job composite cho {meet_code} {vn_date}")
+            return _json_response(
+                {"ok": True, "mode": "concat", "status": "already_processing",
+                 "meet_code": meet_code, "date": vn_date,
+                 "message": "Buổi này đang được dựng bởi một job khác."},
+                202,
+            )
+        job_id = uuid.uuid4().hex[:12]
+        print(f"[async {job_id}] NHẬN composite {meet_code} {vn_date} | sync_after={sync_after}")
+        threading.Thread(
+            target=_background_composite,
+            kwargs={"job_id": job_id, "lock_key": lock_key, "meet_code": meet_code,
+                    "vn_date": vn_date, "sync_after": sync_after},
+            daemon=True,
+        ).start()
+        return _json_response(
+            {"ok": True, "mode": "concat", "status": "processing", "job_id": job_id,
+             "meet_code": meet_code, "date": vn_date, "sync_after": sync_after,
+             "message": "Đã nhận. Dựng video ở nền; record_link sẽ được ghi vào "
+                        "Supabase khi xong. Parent app chỉ cần fetch lại."},
+            202,
+        )
+
+    buffer = io.StringIO()
+    try:
+        with contextlib.redirect_stdout(_Tee(sys.__stdout__, buffer)):
+            uri, action = _do_composite(meet_code, vn_date, sync_after)
+    except Exception as error:
+        return _json_response(
+            {"ok": False, "mode": "concat", "meet_code": meet_code, "date": vn_date,
+             "error": f"{type(error).__name__}: {error}",
+             "log": buffer.getvalue()[-40000:]},
+            500,
+        )
+    files = [uri] if uri else []
+    return _json_response(
+        {"ok": True, "mode": "concat", "meet_code": meet_code, "date": vn_date,
+         "count": len(files), "files": files, "sync_after": sync_after, "sync": action,
+         "log": buffer.getvalue()[-40000:]},
+        200,
+    )
+
+
 @functions_framework.http
 def handle(request):
     if request.method != "POST":
@@ -388,10 +555,16 @@ def handle(request):
     payload = request.get_json(silent=True) or {}
 
     mode = str(payload.get("mode") or "concat").lower().strip()
-    if mode not in {"concat", "sync"}:
+    if mode not in {"concat", "concat_legacy", "sync"}:
         return _json_response(
-            {"ok": False, "error": "mode phải là 'concat' hoặc 'sync'."}, 400
+            {"ok": False, "error": "mode phải là 'concat', 'concat_legacy' hoặc 'sync'."}, 400
         )
+
+    target = _resolve_class(payload) if mode == "concat" else None
+    if target is not None:
+        return _handle_composite(payload, *target)
+    if mode == "concat_legacy":
+        mode = "concat"
 
     select = str(payload.get("select") or "all").lower().strip()
     if select not in _ALLOWED_SELECT:

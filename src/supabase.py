@@ -658,3 +658,117 @@ def supabase_record_sync(
                 default=str,
             )
         )
+
+
+def find_kns_session_for_composite(
+    *,
+    supabase_client: Client,
+    meet_code: str,
+    vn_date: str,
+) -> tuple[dict[str, Any] | None, str]:
+    """Buổi KNS (chưa huỷ, chưa gộp) của Meet code trong ngày VN đó.
+
+    Trả (row, "") khi có đúng một buổi, ngược lại (None, "no_match" | "multiple_matches").
+    Khớp theo meet code nằm trong meeting_url vì cột này có nhiều dạng (http://, thiếu
+    scheme, đuôi ?hs=..., tel.meet/...), so bằng nguyên URL https:// sẽ sót buổi.
+    """
+    response = (
+        supabase_client
+        .table("kns_class_sessions")
+        .select("id,class_name,session_date,status,record_link,merged_into_session_id")
+        .eq("session_date", vn_date)
+        .ilike("meeting_url", f"*{meet_code}*")
+        .execute()
+    )
+    rows = [
+        row
+        for row in normalize_supabase_rows(response.data)
+        if not str(row.get("status") or "").lower().startswith("cancel")
+        and not row.get("merged_into_session_id")
+    ]
+    if len(rows) != 1:
+        print(
+            "[supabase] composite: "
+            f"{len(rows)} kns_class_sessions row(s) for {meet_code} on {vn_date}"
+        )
+        return None, "no_match" if not rows else "multiple_matches"
+    return rows[0], ""
+
+
+def composite_skip_reason(
+    *,
+    supabase_client: Client,
+    meet_code: str,
+    vn_date: str,
+) -> str | None:
+    """Lý do không cần dựng video cả buổi, None nếu cần dựng.
+
+    Buổi đã có link Drive bản ghi Google Meet (Apps Script ghi) hay link CS dán tay thì
+    không dựng: bản Meet có đủ mentor, slide và tiếng nên luôn tốt hơn. Chỉ dựng khi
+    record_link đang trống hoặc đang là gs:// (video ghép cũ _from_c.webm / bản dựng trước).
+    Không tìm được đúng một buổi thì cũng không dựng vì không có chỗ ghi link.
+    """
+    row, reason = find_kns_session_for_composite(
+        supabase_client=supabase_client, meet_code=meet_code, vn_date=vn_date
+    )
+    if row is None:
+        return reason
+    current = row.get("record_link") or ""
+    if current and not current.startswith("gs://"):
+        print(
+            "[supabase] composite: already has record_link, skip "
+            f"id={row.get('id')} record_link={current}"
+        )
+        return "has_record_link"
+    return None
+
+
+def sync_composite_record_link(
+    *,
+    supabase_client: Client,
+    meet_code: str,
+    vn_date: str,
+    record_link: str,
+) -> str:
+    """Ghi video dựng lại của cả buổi (src/composite.py) vào kns_class_sessions.
+
+    Chỉ ghi khi record_link đang trống hoặc đang là gs:// (xem composite_skip_reason).
+    Điều kiện trống/gs:// đi kèm câu UPDATE để không đè link Drive mà Apps Script vừa
+    ghi trong lúc đang dựng.
+    """
+    row, reason = find_kns_session_for_composite(
+        supabase_client=supabase_client, meet_code=meet_code, vn_date=vn_date
+    )
+    if row is None:
+        return reason
+
+    current = row.get("record_link") or ""
+    if current == record_link:
+        return "already"
+    if current and not current.startswith("gs://"):
+        print(
+            "[supabase] composite: keep existing record_link "
+            f"id={row.get('id')} record_link={current}"
+        )
+        return "kept_existing"
+
+    response = (
+        supabase_client
+        .table("kns_class_sessions")
+        .update({"record_link": record_link})
+        .eq("id", row.get("id"))
+        .or_("record_link.is.null,record_link.like.gs*")
+        .execute()
+    )
+    if not normalize_supabase_rows(response.data):
+        print(
+            "[supabase] composite: record_link changed concurrently, not written "
+            f"id={row.get('id')}"
+        )
+        return "changed_concurrently"
+
+    print(
+        "[supabase] composite: Updated record_link "
+        f"id={row.get('id')} record_link={record_link} (was {current or 'empty'})"
+    )
+    return "updated"

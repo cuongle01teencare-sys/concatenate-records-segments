@@ -406,6 +406,15 @@ def build_arg_parser():
         ),
     )
     group.add_argument(
+        "--composite",
+        action="store_true",
+        help=(
+            "Dựng video cả buổi (lưới camera học sinh theo giờ thật + tiếng mentor "
+            "và học sinh, MP4) cho --meet + --date rồi ghi record_link của "
+            "kns_class_sessions. Buổi đã có link Drive bản ghi Meet thì không dựng."
+        ),
+    )
+    group.add_argument(
         "--sync",
         action="store_true",
         help=(
@@ -423,6 +432,16 @@ def build_arg_parser():
             "AUDIO_MATCH_GLOB (mặc định captures/*/*/*audio/**/*.webm). Vd: "
             "\"captures/aex-cqbn-hxi/session-2026-08-19T*/participants/*/video/**/*.webm\""
         ),
+    )
+    parser.add_argument("--meet", help="--composite: Meet code, vd fji-qahg-tbd")
+    parser.add_argument("--date", help="--composite: ngày VN yyyy-mm-dd (session_date)")
+    parser.add_argument(
+        "--force", action="store_true",
+        help="--composite: dựng lại dù đã có bản dựng trên GCS",
+    )
+    parser.add_argument(
+        "--no-sync", dest="no_sync", action="store_true",
+        help="--composite: chỉ dựng + upload, không ghi Supabase",
     )
     return parser
 
@@ -465,6 +484,42 @@ if __name__ == "__main__":
         )
         if audio_summary.failed:
             raise SystemExit(1)
+    elif args.composite:
+        if not (args.meet and args.date):
+            raise SystemExit("--composite cần --meet và --date")
+        from src.composite import build_and_upload_class_composite
+
+        supabase_client = None
+        if not args.no_sync and SUPABASE_API_URL and SUPABASE_API_KEY:
+            from supabase import create_client
+            from src.supabase import composite_skip_reason
+
+            supabase_client = create_client(SUPABASE_API_URL, SUPABASE_API_KEY)
+            reason = composite_skip_reason(
+                supabase_client=supabase_client, meet_code=args.meet, vn_date=args.date
+            )
+            if reason:
+                raise SystemExit(f"Composite: bỏ qua ({reason})")
+
+        uri = build_and_upload_class_composite(
+            bucket=storage.Client(project=PROJECT_ID).bucket(BUCKET_NAME),
+            meet_code=args.meet,
+            vn_date=args.date,
+            force=args.force,
+        )
+        print(f"Composite: {uri}")
+        if uri and supabase_client is not None:
+            from src.supabase import sync_composite_record_link
+
+            print(
+                "Composite sync: "
+                + sync_composite_record_link(
+                    supabase_client=supabase_client,
+                    meet_code=args.meet,
+                    vn_date=args.date,
+                    record_link=uri,
+                )
+            )
     elif args.sync:
         run_sync(
             project_id=PROJECT_ID,
